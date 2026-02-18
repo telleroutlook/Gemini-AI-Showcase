@@ -56,7 +56,7 @@ const DownloadButton: React.FC<{ text: string, language: string }> = React.memo(
       javascript: 'js', typescript: 'ts', python: 'py', html: 'html', css: 'css',
       json: 'json', markdown: 'md', java: 'java', cpp: 'cpp', c: 'c', go: 'go',
       rust: 'rs', php: 'php', ruby: 'rb', swift: 'swift', kotlin: 'kt', sql: 'sql',
-      shell: 'sh', bash: 'sh', xml: 'xml', yaml: 'yaml',
+      shell: 'sh', bash: 'sh', xml: 'xml', yaml: 'yaml', svg: 'svg'
     };
 
     const ext = extensions[language.toLowerCase()] || 'txt';
@@ -80,12 +80,52 @@ const DownloadButton: React.FC<{ text: string, language: string }> = React.memo(
 });
 
 const CodeBlockWithPreview: React.FC<{ children: React.ReactNode, className?: string }> = ({ children, className }) => {
-  const [activeTab, setActiveTab] = useState<'code' | 'preview'>('code');
   const rawCode = extractText(children).replace(/\n$/, '');
-  
   const match = /language-(\w+)/.exec(className || '');
-  const language = match ? match[1] : '';
-  const canPreview = language === 'html' || language === 'svg';
+  const language = (match ? match[1] : '').toLowerCase();
+  
+  // Enhanced detection for previewable content
+  const isSvg = language === 'svg' || (language === 'xml' && rawCode.trim().startsWith('<svg'));
+  const canPreview = language === 'html' || isSvg;
+
+  const [activeTab, setActiveTab] = useState<'code' | 'preview'>(canPreview ? 'preview' : 'code');
+  const [previewBg, setPreviewBg] = useState<'light' | 'dark'>('light');
+
+  const iframeSrc = useMemo(() => {
+    const bg = previewBg === 'light' ? '#ffffff' : '#0f172a';
+    const fg = previewBg === 'light' ? '#1e293b' : '#f8fafc';
+    return `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <style>
+            body { 
+              margin: 0; 
+              padding: 24px; 
+              font-family: 'Inter', system-ui, -apple-system, sans-serif;
+              color: ${fg};
+              background-color: ${bg};
+              display: flex;
+              justify-content: center;
+              min-height: 100vh;
+              box-sizing: border-box;
+            }
+            .content-wrapper {
+               width: 100%;
+               max-width: 100%;
+               ${isSvg ? 'display: flex; justify-content: center; align-items: center;' : ''}
+            }
+            svg { max-width: 100%; height: auto; }
+          </style>
+        </head>
+        <body>
+          <div class="content-wrapper">
+             ${rawCode}
+          </div>
+        </body>
+      </html>
+    `;
+  }, [rawCode, previewBg, isSvg]);
 
   return (
     <div className="relative group my-4 rounded-lg overflow-hidden border border-slate-700 bg-slate-900">
@@ -116,16 +156,25 @@ const CodeBlockWithPreview: React.FC<{ children: React.ReactNode, className?: st
           )}
         </div>
         <div className="flex items-center gap-1">
+           {activeTab === 'preview' && canPreview && (
+              <button 
+                onClick={() => setPreviewBg(prev => prev === 'light' ? 'dark' : 'light')}
+                className="p-1.5 text-slate-400 hover:text-white bg-slate-700/50 hover:bg-slate-700 rounded-md transition-all mr-1"
+                title={`Switch to ${previewBg === 'light' ? 'dark' : 'light'} background`}
+              >
+                 {previewBg === 'light' ? <Icons.Moon /> : <Icons.Sun />}
+              </button>
+           )}
            <DownloadButton text={rawCode} language={language} />
            <CopyButton text={rawCode} />
         </div>
       </div>
 
       {activeTab === 'preview' && canPreview ? (
-        <div className="bg-white overflow-hidden h-[500px] resize-y relative rounded-b-lg">
+        <div className="bg-slate-900 overflow-hidden h-[500px] resize-y relative rounded-b-lg border-t border-slate-700">
            <iframe 
-             srcDoc={rawCode}
-             className="w-full h-full border-0"
+             srcDoc={iframeSrc}
+             className="w-full h-full border-0 bg-transparent"
              sandbox="allow-scripts"
              title="Code Preview"
            />
@@ -166,55 +215,19 @@ const MarkdownRenderer: React.FC<MarkdownRendererProps> = React.memo(({ content 
             if (isBlock) {
                return <CodeBlockWithPreview className={className}>{children}</CodeBlockWithPreview>;
             }
-
+            
             return (
-              <code {...rest} className={className}>
+              <code className={className} {...rest}>
                 {children}
               </code>
             );
-          },
-          a: ({ node, ...props }) => (
-            <a 
-              {...props} 
-              target="_blank" 
-              rel="noopener noreferrer" 
-              className="text-blue-400 hover:text-blue-300 underline decoration-blue-400/30 hover:decoration-blue-300 transition-all cursor-pointer"
-            />
-          ),
-          ul: ({ node, ...props }) => (
-            <ul {...props} className="list-disc list-outside ml-4 my-2 space-y-1" />
-          ),
-          ol: ({ node, ...props }) => (
-            <ol {...props} className="list-decimal list-outside ml-4 my-2 space-y-1" />
-          ),
-          li: ({ node, ...props }) => (
-            <li {...props} className="pl-1" />
-          ),
-          table: ({ node, ...props }) => (
-            <div className="overflow-x-auto my-4 border border-slate-700 rounded-lg shadow-sm bg-slate-800/20">
-              <table {...props} className="min-w-full divide-y divide-slate-700 m-0" />
-            </div>
-          ),
-          thead: ({ node, ...props }) => (
-            <thead {...props} className="bg-slate-800/80" />
-          ),
-          th: ({ node, ...props }) => (
-            <th {...props} className="px-4 py-3 text-left text-xs font-semibold text-slate-200 uppercase tracking-wider whitespace-nowrap" />
-          ),
-          td: ({ node, ...props }) => (
-            <td {...props} className="px-4 py-3 text-sm text-slate-300 whitespace-nowrap border-t border-slate-700/50" />
-          ),
-          blockquote: ({ node, ...props }) => (
-             <blockquote {...props} className="border-l-4 border-blue-500/50 pl-4 py-1 italic text-slate-400 bg-slate-800/30 rounded-r-md my-4" />
-          )
+          }
         }}
       >
         {content}
       </Markdown>
     </div>
   );
-}, (prevProps, nextProps) => {
-    return prevProps.content === nextProps.content;
 });
 
 export default MarkdownRenderer;

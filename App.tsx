@@ -6,7 +6,7 @@ import Hero from './components/Hero';
 import ModelShowcase from './components/ModelShowcase';
 import Footer from './components/Footer';
 import { ChatSession, ChatMessage, Attachment, SessionConfig } from './types';
-import { createChatSession, streamChatMessage, SUGGESTION_SEPARATOR } from './services/geminiService';
+import { createChatSession, streamChatMessage } from './services/geminiService';
 import { Chat } from '@google/genai';
 import { AVAILABLE_MODELS } from './constants';
 
@@ -23,6 +23,7 @@ function App() {
   
   const chatInstanceRef = useRef<Chat | null>(null);
   const isGeneratingRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Load from local storage on init
   useEffect(() => {
@@ -135,6 +136,10 @@ function App() {
   };
 
   const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
     isGeneratingRef.current = false;
     setIsLoading(false);
   };
@@ -269,6 +274,7 @@ function App() {
 
     setIsLoading(true);
     isGeneratingRef.current = true;
+    abortControllerRef.current = new AbortController();
 
     // Initialize placeholder with timing info
     const placeholderMsg: ChatMessage = { 
@@ -287,113 +293,130 @@ function App() {
 
     try {
       const currentSession = sessions.find(s => s.id === activeSessionId);
+      const sessionModelId = currentSession?.modelId || selectedModel;
+      
       chatInstanceRef.current = createChatSession(
            currentSession?.messages || [], 
-           selectedModel,
+           sessionModelId,
            currentSession?.config
       );
       
-      // Determine if we should use search from session config (default to true if undefined)
       const useSearch = currentSession?.config?.useSearch ?? true;
       
-      const stream = streamChatMessage(chatInstanceRef.current, text, attachments, useSearch);
+      // streamChatMessage now performs a single atomic fetch (non-streaming internally)
+      // but yields the result in a compatible format
+      const stream = streamChatMessage(
+        chatInstanceRef.current, 
+        text, 
+        attachments, 
+        useSearch,
+        abortControllerRef.current.signal
+      );
       
       let fullText = "";
       let groundingMetadata: any = null;
       let usageMetadata: any = null;
+      let finalSuggestions: string[] = [];
 
       for await (const chunk of stream) {
         if (!isGeneratingRef.current) break;
 
-        if (chunk.text) fullText += chunk.text;
+        // chunk.text is now the parsed 'answer' field from the JSON
+        if (chunk.text) fullText = chunk.text;
+        
         if (chunk.candidates?.[0]?.groundingMetadata) {
           groundingMetadata = chunk.candidates[0].groundingMetadata;
         }
         if (chunk.usageMetadata) {
           usageMetadata = chunk.usageMetadata;
         }
+        if ((chunk as any).suggestions) {
+          finalSuggestions = (chunk as any).suggestions;
+        }
         
-        // Performance Optimization: Update state efficiently
+        // Update immediately since it's a single chunk
+        setSessions(prev => updateSessionMessage(
+            prev, 
+            activeSessionId!, 
+            fullText, 
+            groundingMetadata, 
+            usageMetadata, 
+            finalSuggestions
+        ));
+      }
+
+      // Final Timing Update
+      setSessions(prev => {
+         return prev.map(session => {
+            if (session.id === activeSessionId) {
+              const msgs = [...session.messages];
+              const lastMsgIndex = msgs.length - 1;
+              const lastMsg = { ...msgs[lastMsgIndex] };
+
+              if (lastMsg.role === 'model' && lastMsg.timing) {
+                 const endTime = Date.now();
+                 lastMsg.timing = {
+                   ...lastMsg.timing,
+                   endTime,
+                   duration: endTime - lastMsg.timing.startTime
+                 };
+                 msgs[lastMsgIndex] = lastMsg;
+              }
+              return { ...session, messages: msgs };
+            }
+            return session;
+         });
+      });
+
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        console.error(error);
+        const errorMsg = "\n[Error: Could not generate response. Please check API Key.]";
         setSessions(prev => prev.map(session => {
           if (session.id === activeSessionId) {
             const msgs = [...session.messages];
-            const lastMsg = msgs[msgs.length - 1];
-            if (lastMsg.role === 'model') {
-              lastMsg.text = fullText;
-              if (groundingMetadata) lastMsg.groundingMetadata = groundingMetadata;
-              if (usageMetadata) lastMsg.usageMetadata = usageMetadata;
-            }
+            const lastMsg = { ...msgs[msgs.length - 1] };
+            lastMsg.text += errorMsg;
+            msgs[msgs.length - 1] = lastMsg;
             return { ...session, messages: msgs };
           }
           return session;
         }));
       }
-
-      // Final processing: Parse Suggestions & Timing
-      setSessions(prev => prev.map(session => {
-        if (session.id === activeSessionId) {
-          const msgs = [...session.messages];
-          const lastMsg = msgs[msgs.length - 1];
-          if (lastMsg.role === 'model') {
-             // 1. Timing
-             if (lastMsg.timing) {
-               const endTime = Date.now();
-               lastMsg.timing = {
-                 ...lastMsg.timing,
-                 endTime,
-                 duration: endTime - lastMsg.timing.startTime
-               };
-             }
-
-             // 2. Parse Suggestions (Once at the end)
-             const separatorIndex = fullText.indexOf(SUGGESTION_SEPARATOR);
-             let displayText = fullText;
-             let suggestions: string[] = [];
-
-             if (separatorIndex !== -1) {
-               displayText = fullText.substring(0, separatorIndex).trim();
-               const rawJsonPart = fullText.substring(separatorIndex + SUGGESTION_SEPARATOR.length);
-               const cleanJson = rawJsonPart.replace(/```json/g, '').replace(/```/g, '').trim();
-               
-               try {
-                   // Simple regex to extract the array, robustness fix
-                   const arrayMatch = cleanJson.match(/\[[\s\S]*\]/);
-                   if (arrayMatch) {
-                       const parsed = JSON.parse(arrayMatch[0]);
-                       if (Array.isArray(parsed)) {
-                           suggestions = parsed;
-                       }
-                   }
-               } catch (e) {
-                   // console.warn('Failed to parse suggestions');
-               }
-             }
-             
-             lastMsg.text = displayText;
-             if (suggestions.length > 0) {
-                lastMsg.suggestions = suggestions;
-             }
-          }
-          return { ...session, messages: msgs };
-        }
-        return session;
-      }));
-
-    } catch (error) {
-      console.error(error);
-      const errorMsg = "\n[Error: Could not generate response. Please check API Key.]";
-      setSessions(prev => prev.map(session => {
-        if (session.id === activeSessionId) {
-          const msgs = [...session.messages];
-          msgs[msgs.length - 1].text += errorMsg;
-          return { ...session, messages: msgs };
-        }
-        return session;
-      }));
     } finally {
       setIsLoading(false);
       isGeneratingRef.current = false;
+      abortControllerRef.current = null;
     }
+  };
+
+  // Helper function for immutable updates
+  const updateSessionMessage = (
+    sessions: ChatSession[], 
+    sessionId: string, 
+    text: string, 
+    grounding: any, 
+    usage: any,
+    suggestions: string[] = []
+  ) => {
+    return sessions.map(session => {
+      if (session.id === sessionId) {
+        const msgs = [...session.messages];
+        const lastMsgIndex = msgs.length - 1;
+        
+        // Ensure we are updating a model message
+        if (msgs[lastMsgIndex].role === 'model') {
+           const lastMsg = { ...msgs[lastMsgIndex] };
+           lastMsg.text = text;
+           if (grounding) lastMsg.groundingMetadata = grounding;
+           if (usage) lastMsg.usageMetadata = usage;
+           if (suggestions.length > 0) lastMsg.suggestions = suggestions;
+           msgs[lastMsgIndex] = lastMsg;
+        }
+        return { ...session, messages: msgs };
+      }
+      return session;
+    });
   };
 
   const currentSession = sessions.find(s => s.id === currentSessionId);

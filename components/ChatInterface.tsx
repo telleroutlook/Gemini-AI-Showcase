@@ -1,7 +1,9 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, Suspense } from 'react';
 import { ChatMessage, Attachment } from '../types';
 import { Icons, AVAILABLE_MODELS } from '../constants';
-import MarkdownRenderer from './MarkdownRenderer';
+
+// Lazy load the heavy Markdown renderer
+const MarkdownRenderer = React.lazy(() => import('./MarkdownRenderer'));
 
 interface ChatInterfaceProps {
   messages: ChatMessage[];
@@ -29,7 +31,7 @@ const MessageItem = React.memo(({
   saveEdit, 
   setEditingMessageIndex,
   onRegenerate,
-  handleSubmit,
+  onSuggestionClick, // Changed from handleSubmit to specific handler
   isLast,
   handleTTS
 }: any) => {
@@ -136,35 +138,19 @@ const MessageItem = React.memo(({
                 </>
               ) : (
                 <>
-                  <MarkdownRenderer content={msg.text} />
-                  
-                  {/* Grounding Sources */}
-                  {msg.groundingMetadata?.groundingChunks && msg.groundingMetadata.groundingChunks.length > 0 && (
-                    <div className="mt-4 pt-3 border-t border-slate-700/50">
-                      <div className="text-xs font-semibold text-slate-500 mb-2 uppercase tracking-wider flex items-center gap-1">
-                        <Icons.Globe /> Sources
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {msg.groundingMetadata.groundingChunks.map((chunk: any, i: number) => (
-                          chunk.web?.uri && (
-                            <a 
-                              key={i}
-                              href={chunk.web.uri}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex items-center gap-1.5 px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded-md text-xs text-blue-400 hover:text-blue-300 transition-colors border border-slate-700"
-                            >
-                              <span className="truncate max-w-[150px]">{chunk.web.title || chunk.web.uri}</span>
-                            </a>
-                          )
-                        ))}
-                      </div>
+                  <Suspense fallback={
+                    <div className="space-y-2 py-2">
+                       <div className="h-4 bg-slate-700/50 rounded w-3/4 animate-pulse"></div>
+                       <div className="h-4 bg-slate-700/50 rounded w-1/2 animate-pulse"></div>
+                       <div className="h-4 bg-slate-700/50 rounded w-5/6 animate-pulse"></div>
                     </div>
-                  )}
+                  }>
+                    <MarkdownRenderer content={msg.text} />
+                  </Suspense>
                   
                   {/* Usage & Timing Stats */}
                   {(msg.usageMetadata || msg.timing) && (
-                    <div className="mt-3 pt-2 border-t border-slate-700/30 flex items-center gap-4 text-[10px] text-slate-500 font-mono">
+                    <div className="mt-3 pt-2 border-t border-slate-700/30 flex items-center gap-4 text-[10px] text-slate-500 font-mono select-none">
                       {msg.usageMetadata && (
                         <span title="Prompt / Candidates / Total Tokens">
                           TOKENS: {msg.usageMetadata.promptTokenCount} &uarr; {msg.usageMetadata.candidatesTokenCount} &darr; ({msg.usageMetadata.totalTokenCount})
@@ -184,7 +170,7 @@ const MessageItem = React.memo(({
                       {msg.suggestions.map((suggestion: string, sIdx: number) => (
                         <button
                           key={sIdx}
-                          onClick={() => handleSubmit(undefined, suggestion)}
+                          onClick={() => onSuggestionClick(suggestion)}
                           className="text-xs px-3 py-2 bg-slate-800 hover:bg-blue-600/20 hover:text-blue-300 hover:border-blue-500/50 border border-slate-600/50 rounded-lg transition-all text-slate-300 active:scale-[0.98]"
                         >
                           {suggestion}
@@ -230,12 +216,14 @@ const MessageItem = React.memo(({
     </div>
   );
 }, (prev, next) => {
+  // Custom equality check for React.memo
   return (
     prev.msg === next.msg && 
     prev.isEditing === next.isEditing && 
     prev.editInput === next.editInput &&
     prev.isLast === next.isLast &&
     prev.isLoading === next.isLoading
+    // Note: We intentionally ignore onSuggestionClick etc. assuming they are stable via useCallback
   );
 });
 
@@ -272,9 +260,14 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   }, []);
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    userScrolledUpRef.current = false;
+  const scrollToBottom = useCallback((force = false) => {
+    if (messagesEndRef.current) {
+      // Only scroll if force is true OR user hasn't scrolled up
+      if (force || !userScrolledUpRef.current) {
+        messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+        if (force) userScrolledUpRef.current = false;
+      }
+    }
   }, []);
 
   const handleScroll = useCallback(() => {
@@ -283,22 +276,34 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       const distFromBottom = scrollHeight - scrollTop - clientHeight;
       const isNearBottom = distFromBottom < 100;
       
+      // If user is near bottom, release the "scrolled up" lock
+      if (isNearBottom) {
+        userScrolledUpRef.current = false;
+      } else {
+        userScrolledUpRef.current = true;
+      }
+      
       setShowScrollButton(!isNearBottom);
-      userScrolledUpRef.current = !isNearBottom;
     }
   }, []);
 
+  // Auto-scroll effect
   useEffect(() => {
-    if (!userScrolledUpRef.current && messages.length > 0) {
-      requestAnimationFrame(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-      });
+    if (messages.length > 0) {
+      // If a new message appeared (length changed), force scroll if it's from user,
+      // otherwise use smart logic for AI streaming
+      const lastMsg = messages[messages.length - 1];
+      const isUser = lastMsg.role === 'user';
+      
+      // If user just sent a message, always scroll down
+      if (isUser) {
+         scrollToBottom(true);
+      } else {
+         // If AI is streaming, only scroll if user was already at bottom
+         scrollToBottom(false);
+      }
     }
-  }, [messages, isLoading]);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, []);
+  }, [messages, scrollToBottom]);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -346,26 +351,28 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   }, []);
 
-  const handleSubmit = useCallback((e?: React.FormEvent, overrideText?: string) => {
-    e?.preventDefault();
-  }, []);
-
-  const handleFormSubmit = (e?: React.FormEvent, overrideText?: string) => {
+  const handleFormSubmit = (e?: React.FormEvent) => {
      e?.preventDefault();
-    const textToSend = overrideText || input;
-    if ((!textToSend.trim() && selectedAttachments.length === 0) || isLoading) return;
+    if ((!input.trim() && selectedAttachments.length === 0) || isLoading) return;
     
-    onSendMessage(textToSend, selectedAttachments);
-    if (!overrideText) {
-       setInput('');
-       setSelectedAttachments([]);
-    }
+    onSendMessage(input, selectedAttachments);
+    setInput('');
+    setSelectedAttachments([]);
+    
+    // Reset scroll lock so it follows the new message
+    userScrolledUpRef.current = false;
+    
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      // Refocus after send
       setTimeout(() => textareaRef.current?.focus(), 10);
     }
   };
+
+  // Stable callback for suggestions that doesn't depend on 'input' state
+  const handleSuggestionClick = useCallback((text: string) => {
+    onSendMessage(text, []);
+    userScrolledUpRef.current = false;
+  }, [onSendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -495,7 +502,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 saveEdit={saveEdit}
                 setEditingMessageIndex={setEditingMessageIndex}
                 onRegenerate={onRegenerate}
-                handleSubmit={handleFormSubmit}
+                onSuggestionClick={handleSuggestionClick}
                 isLast={idx === messages.length - 1}
                 handleTTS={handleTTS}
               />
@@ -507,12 +514,18 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         {/* Scroll to Bottom Button */}
         {showScrollButton && (
           <button
-            onClick={scrollToBottom}
+            onClick={() => scrollToBottom(true)}
             className="fixed bottom-28 md:bottom-32 right-6 z-30 p-3 bg-slate-800 text-slate-200 rounded-full shadow-lg border border-slate-700 hover:bg-slate-700 transition-all animate-in fade-in zoom-in-95 hover:scale-105"
             title="Scroll to bottom"
             aria-label="Scroll to bottom"
           >
             <Icons.ChevronDown />
+            {isLoading && (
+              <span className="absolute top-0 right-0 -mt-1 -mr-1 flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+              </span>
+            )}
           </button>
         )}
       </div>

@@ -27,8 +27,6 @@ export interface UsageMetadata {
 export interface ChatMessage {
   role: 'user' | 'model';
   text: string;
-  // Deprecated: images?: string[]; 
-  // New field for multimodal support
   attachments?: Attachment[];
   timestamp: number;
   // Grounding metadata for search results
