@@ -8,7 +8,8 @@ import Footer from './components/Footer';
 import { ChatSession, ChatMessage, Attachment, SessionConfig } from './types';
 import { createChatSession, streamChatMessage } from './services/geminiService';
 import { Chat } from '@google/genai';
-import { AVAILABLE_MODELS } from './constants';
+import { AVAILABLE_MODELS, Icons } from './constants';
+import { AnimatePresence, motion } from 'motion/react';
 
 function App() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -436,38 +437,54 @@ function App() {
         currentView={view}
       />
       
-      {view === 'home' ? (
-        <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 bg-slate-900 relative">
-          <div className="md:hidden absolute top-4 left-4 z-20">
-            <button 
-              onClick={() => setIsSidebarOpen(true)} 
-              className="p-2 bg-slate-800 rounded-lg text-slate-200 shadow-lg border border-slate-700"
-              aria-label="Open Menu"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
-              </svg>
-            </button>
-          </div>
-          <Hero onStartChat={createNewSession} />
-          <ModelShowcase />
-          <Footer />
-        </div>
-      ) : (
-        <ChatInterface 
-          messages={currentSessionMessages}
-          isLoading={isLoading}
-          onSendMessage={handleSendMessage}
-          onMobileMenuToggle={() => setIsSidebarOpen(true)}
-          onStopGeneration={handleStopGeneration}
-          onRegenerate={handleRegenerate}
-          selectedModel={selectedModel}
-          onModelChange={handleModelChange}
-          onOpenSettings={() => setShowSettings(true)}
-          onExportChat={handleExportChat}
-          onEditMessage={handleEditMessage}
-        />
-      )}
+      <AnimatePresence mode="wait">
+        {view === 'home' ? (
+          <motion.div 
+            key="home"
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            transition={{ duration: 0.2 }}
+            className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 bg-slate-900 relative"
+          >
+            <div className="md:hidden absolute top-4 left-4 z-20">
+              <button 
+                onClick={() => setIsSidebarOpen(true)} 
+                className="p-2 bg-slate-800 rounded-lg text-slate-200 shadow-lg border border-slate-700"
+                aria-label="Open Menu"
+              >
+                <Icons.Menu />
+              </button>
+            </div>
+            <Hero onStartChat={createNewSession} />
+            <ModelShowcase />
+            <Footer />
+          </motion.div>
+        ) : (
+          <motion.div 
+            key="chat"
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 20 }}
+            transition={{ duration: 0.2 }}
+            className="flex-1 h-full flex flex-col"
+          >
+            <ChatInterface 
+              messages={currentSessionMessages}
+              isLoading={isLoading}
+              onSendMessage={handleSendMessage}
+              onMobileMenuToggle={() => setIsSidebarOpen(true)}
+              onStopGeneration={handleStopGeneration}
+              onRegenerate={handleRegenerate}
+              selectedModel={selectedModel}
+              onModelChange={handleModelChange}
+              onOpenSettings={() => setShowSettings(true)}
+              onExportChat={handleExportChat}
+              onEditMessage={handleEditMessage}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {currentSession && view === 'chat' && (
         <SettingsModal 
